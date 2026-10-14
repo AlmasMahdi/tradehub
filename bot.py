@@ -16,7 +16,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 if not API_TOKEN:
     raise ValueError("⚠️ BOT_TOKEN is missing! Please set it in the .env file.")
 
-BINANCE_PAY_UID = "516051485"
+BINANCE_PAY_UID = "973903765"
 ADMIN_USERNAME = "lorem_3"
 REQUIRED_CHANNEL = "tradehub_buy_sell"
 
@@ -150,6 +150,30 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
     if db_user[5] == 1:
         return None, None
         
+    # --- ADMIN EXCLUSIVE WELCOME & MENU ---
+    if user_id == ADMIN_ID:
+        admin_welcome_text = (
+            f"⚡ <b>TradeHub Admin Control Center</b>\n"
+            f"Welcome back, <b>{user.first_name}</b>!\n\n"
+            f"________________________________________\n\n"
+            f"🏷️ Username: {username}\n"
+            f"🆔 Admin ID: {user_id}\n"
+            f"👑 Role: System Administrator\n\n"
+            f"________________________________________\n\n"
+            f"Select an administrative option below:"
+        )
+        admin_kb = [
+            [types.InlineKeyboardButton(text="⏳ Pending Orders", callback_data="adm_pending_orders")],
+            [types.InlineKeyboardButton(text="📦 View Stock & Add Items", callback_data="adm_stock")],
+            [types.InlineKeyboardButton(text="📢 Broadcast Message", callback_data="adm_broadcast")],
+            [types.InlineKeyboardButton(text="📊 Store Statistics", callback_data="adm_stats")],
+            [types.InlineKeyboardButton(text="🚫 Ban User", callback_data="adm_ban"),
+             types.InlineKeyboardButton(text="✅ Unban User", callback_data="adm_unban")],
+            [types.InlineKeyboardButton(text="🛒 View Store (User Mode)", callback_data="shop")]
+        ]
+        return admin_welcome_text, types.InlineKeyboardMarkup(inline_keyboard=admin_kb)
+
+    # --- STANDARD USER MENU ---
     total_spent = db_user[2]
     membership = get_membership_tier(total_spent)
     
@@ -184,9 +208,6 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
         [types.InlineKeyboardButton(text="📜 Order History", callback_data="orders")],
         [types.InlineKeyboardButton(text="🛠️ Support", url=f"https://t.me/{ADMIN_USERNAME}")]
     ]
-    
-    if user_id == ADMIN_ID:
-        kb.insert(0, [types.InlineKeyboardButton(text="⚡ Admin Control Panel", callback_data="admin_panel")])
 
     return welcome_text, types.InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -294,6 +315,7 @@ async def open_orders(callback: types.CallbackQuery):
     await callback.answer()
 
 
+# --- UNIFIED INTERACTIVE ADMIN PANEL ---
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel_handler(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
@@ -302,18 +324,63 @@ async def admin_panel_handler(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     
     admin_text = (
-        f"⚡ <b>TradeHub Admin Control Panel</b>\n\n"
-        f"Manage your store effortlessly using the buttons below:"
+        f"⚡ <b>TradeHub Admin Control Center</b>\n"
+        f"Welcome back, <b>{callback.from_user.first_name}</b>!\n\n"
+        f"________________________________________\n\n"
+        f"🏷️ Username: @{callback.from_user.username or 'Not Set'}\n"
+        f"🆔 Admin ID: {ADMIN_ID}\n"
+        f"👑 Role: System Administrator\n\n"
+        f"________________________________________\n\n"
+        f"Select an administrative option below:"
     )
     kb = [
+        [types.InlineKeyboardButton(text="⏳ Pending Orders", callback_data="adm_pending_orders")],
         [types.InlineKeyboardButton(text="📦 View Stock & Add Items", callback_data="adm_stock")],
         [types.InlineKeyboardButton(text="📢 Broadcast Message", callback_data="adm_broadcast")],
         [types.InlineKeyboardButton(text="📊 Store Statistics", callback_data="adm_stats")],
         [types.InlineKeyboardButton(text="🚫 Ban User", callback_data="adm_ban"),
          types.InlineKeyboardButton(text="✅ Unban User", callback_data="adm_unban")],
-        [types.InlineKeyboardButton(text="🔙 Back to Main Menu", callback_data="back_to_menu")]
+        [types.InlineKeyboardButton(text="🛒 View Store (User Mode)", callback_data="shop")]
     ]
     await callback.message.edit_text(admin_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "adm_pending_orders")
+async def admin_pending_orders(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, user_id, username, product_name, quantity, amount, txid FROM orders WHERE status = 'pending' ORDER BY id DESC LIMIT 5")
+    pending = cursor.fetchall()
+    conn.close()
+
+    if not pending:
+        kb = [[types.InlineKeyboardButton(text="🔙 Back to Admin Panel", callback_data="admin_panel")]]
+        await callback.message.edit_text("⏳ <b>Pending Orders</b>\n\n<i>No pending orders found right now.</i>", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+        await callback.answer()
+        return
+
+    ord = pending[0]
+    order_id, user_id, username, p_name, qty, amount, txid = ord
+    
+    order_text = (
+        f"⏳ <b>Pending Order #{order_id}</b>\n\n"
+        f"👤 <b>User:</b> {username} (<code>{user_id}</code>)\n"
+        f"📦 <b>Product:</b> {p_name} (Qty: {qty})\n"
+        f"💰 <b>Amount:</b> ${amount:.2f}\n"
+        f"🆔 <b>TxID:</b> <code>{txid}</code>\n\n"
+        f"Choose an action for this order:"
+    )
+    kb = [
+        [
+            types.InlineKeyboardButton(text="✅ Approve & Deliver", callback_data=f"adm_app_{order_id}"),
+            types.InlineKeyboardButton(text="❌ Reject", callback_data=f"adm_rej_{order_id}")
+        ],
+        [types.InlineKeyboardButton(text="🔙 Back to Admin Panel", callback_data="admin_panel")]
+    ]
+    await callback.message.edit_text(order_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
 
 
@@ -516,7 +583,10 @@ async def open_shop(callback: types.CallbackQuery):
         p_id, p_name, p_price = prod
         stock = get_stock_count(p_id)
         kb.append([types.InlineKeyboardButton(text=f"✨ {p_name} - ${p_price:.2f} (Stock: {stock})", callback_data=f"prod_{p_id}")])
-    kb.append([types.InlineKeyboardButton(text="🔙 Back to Menu", callback_data="back_to_menu")])
+    
+    # Back button goes to admin panel if admin, else standard menu
+    back_target = "admin_panel" if callback.from_user.id == ADMIN_ID else "back_to_menu"
+    kb.append([types.InlineKeyboardButton(text="🔙 Back", callback_data=back_target)])
 
     shop_text = "🛒 <b>TradeHub Store - All Products</b>\n📦 <b>Page 1 of 1</b>\n⬇️ <b>Choose a product to buy:</b>"
     await callback.message.edit_text(shop_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
