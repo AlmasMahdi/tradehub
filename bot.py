@@ -18,20 +18,19 @@ if not API_TOKEN:
 
 BINANCE_PAY_UID = "516051485"
 ADMIN_USERNAME = "lorem_3"
+REQUIRED_CHANNEL = "tradehub_buy_sell"
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# --- FSM STATES FOR ADMIN ACTIONS ---
 class AdminStates(StatesGroup):
     waiting_for_broadcast = State()
     waiting_for_ban = State()
     waiting_for_unban = State()
     waiting_stock_input = State()
 
-# --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect("tradehub_shop.db")
     cursor = conn.cursor()
@@ -123,6 +122,16 @@ def get_or_create_user(user_id: int, username: str, referrer_id: int = None):
     conn.close()
     return user
 
+async def check_user_subscription(user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=f"@{REQUIRED_CHANNEL}", user_id=user_id)
+        if member.status in ["member", "administrator", "creator"]:
+            return True
+        return False
+    except Exception as e:
+        print(f"Subscription check error: {e}")
+        return True
+
 
 async def get_main_menu(message: types.Message, referrer_id: int = None):
     user = message.from_user
@@ -168,7 +177,6 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
         [types.InlineKeyboardButton(text="🛠️ Support", url=f"https://t.me/{ADMIN_USERNAME}")]
     ]
     
-    # Add Admin Panel button if user is admin
     if user_id == ADMIN_ID:
         kb.insert(0, [types.InlineKeyboardButton(text="⚡ Admin Control Panel", callback_data="admin_panel")])
 
@@ -178,6 +186,23 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message, state: FSMContext):
     await state.clear()
+    user_id = message.from_user.id
+
+    is_subscribed = await check_user_subscription(user_id)
+    if not is_subscribed:
+        kb = [
+            [types.InlineKeyboardButton(text="📢 Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL}")],
+            [types.InlineKeyboardButton(text="🔄 Check Membership", callback_data="check_sub")]
+        ]
+        await message.answer(
+            "⚠️ <b>Access Denied!</b>\n\n"
+            f"You must join our official channel to use this bot:\n👉 @{REQUIRED_CHANNEL}\n\n"
+            "After joining the channel, click the <b>'Check Membership'</b> button below.",
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+            parse_mode="HTML"
+        )
+        return
+
     args = message.text.split()
     referrer_id = None
     if len(args) > 1 and args[1].isdigit():
@@ -188,6 +213,23 @@ async def send_welcome(message: types.Message, state: FSMContext):
         await message.answer("⚠️ Your account has been banned from TradeHub.")
         return
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "check_sub")
+async def verify_subscription(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    is_subscribed = await check_user_subscription(user_id)
+    
+    if not is_subscribed:
+        await callback.answer("⚠️ You have not joined the channel yet!", show_alert=True)
+        return
+
+    text, keyboard = await get_main_menu(callback.message)
+    if not keyboard:
+        await callback.answer("Your account is banned.", show_alert=True)
+        return
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer("✅ Membership verified successfully!")
 
 
 @dp.callback_query(F.data == "wallet_disabled")
@@ -244,7 +286,6 @@ async def open_orders(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# --- INTERACTIVE ADMIN PANEL ---
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel_handler(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
@@ -454,7 +495,6 @@ async def execute_unban(message: types.Message, state: FSMContext):
     await message.answer(f"✅ User ID <code>{target_id}</code> has been unbanned successfully.", parse_mode="HTML")
 
 
-# --- SHOP CATEGORIES & PRODUCTS ---
 @dp.callback_query(F.data == "shop_categories")
 async def shop_categories(callback: types.CallbackQuery):
     conn = sqlite3.connect("tradehub_shop.db")
@@ -726,6 +766,12 @@ async def admin_decision(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
+    user_id = callback.from_user.id
+    is_subscribed = await check_user_subscription(user_id)
+    if not is_subscribed:
+        await callback.answer("⚠️ You must join the channel first!", show_alert=True)
+        return
+
     text, keyboard = await get_main_menu(callback.message)
     if not keyboard:
         await callback.answer("Your account is banned.", show_alert=True)
@@ -735,7 +781,7 @@ async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
 
 
 async def main():
-    print("TradeHub Pro Store with Admin Panel is running...")
+    print("TradeHub Pro Store with Force-Join is running...")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
