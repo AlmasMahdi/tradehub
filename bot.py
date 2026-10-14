@@ -5,6 +5,8 @@ import os
 import sqlite3
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,14 +24,30 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
+# --- FSM STATES FOR ADMIN ACTIONS ---
+class AdminStates(StatesGroup):
+    waiting_for_broadcast = State()
+    waiting_for_ban = State()
+    waiting_for_unban = State()
+    waiting_stock_input = State()
+
 # --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect("tradehub_shop.db")
     cursor = conn.cursor()
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT,
+            name TEXT,
+            price REAL,
+            description TEXT
+        )
+    """)
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS stock (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_name TEXT,
+            product_id INTEGER,
             link TEXT
         )
     """)
@@ -39,7 +57,8 @@ def init_db():
             username TEXT,
             total_spent REAL DEFAULT 0.0,
             referred_by INTEGER,
-            referral_earnings REAL DEFAULT 0.0
+            referral_earnings REAL DEFAULT 0.0,
+            is_banned INTEGER DEFAULT 0
         )
     """)
     cursor.execute("""
@@ -59,10 +78,24 @@ def init_db():
 
 init_db()
 
-def get_stock_count(product_name: str) -> int:
+def seed_default_products():
     conn = sqlite3.connect("tradehub_shop.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM stock WHERE product_name = ?", (product_name,))
+    cursor.execute("SELECT COUNT(*) FROM products")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO products (category, name, price, description) VALUES (?, ?, ?, ?)",
+                       ("AI Tools", "Gemini Pro 18m Link", 0.38, "18 Months Plan | 5TB Cloud Storage\n• 100% Private — No Sharing"))
+        cursor.execute("INSERT INTO products (category, name, price, description) VALUES (?, ?, ?, ?)",
+                       ("Streaming", "Netflix Premium 1M", 1.50, "1 Month UHD 4K Private Profile"))
+        conn.commit()
+    conn.close()
+
+seed_default_products()
+
+def get_stock_count(product_id: int) -> int:
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM stock WHERE product_id = ?", (product_id,))
     count = cursor.fetchone()[0]
     conn.close()
     return count
@@ -98,6 +131,9 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
     bot_user = (await bot.get_me()).username
     
     db_user = get_or_create_user(user_id, username, referrer_id)
+    if db_user[5] == 1:
+        return None, None
+        
     total_spent = db_user[2]
     
     conn = sqlite3.connect("tradehub_shop.db")
@@ -123,7 +159,7 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
     )
 
     kb = [
-        [types.InlineKeyboardButton(text="🛒 Shop", callback_data="shop")],
+        [types.InlineKeyboardButton(text="🛒 Shop Categories", callback_data="shop_categories")],
         [
             types.InlineKeyboardButton(text="💰 Wallet (Disabled)", callback_data="wallet_disabled"),
             types.InlineKeyboardButton(text="🤝 Referral", callback_data="referral")
@@ -131,17 +167,26 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
         [types.InlineKeyboardButton(text="📜 Order History", callback_data="orders")],
         [types.InlineKeyboardButton(text="🛠️ Support", url=f"https://t.me/{ADMIN_USERNAME}")]
     ]
+    
+    # Add Admin Panel button if user is admin
+    if user_id == ADMIN_ID:
+        kb.insert(0, [types.InlineKeyboardButton(text="⚡ Admin Control Panel", callback_data="admin_panel")])
+
     return welcome_text, types.InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 @dp.message(Command("start"))
-async def send_welcome(message: types.Message):
+async def send_welcome(message: types.Message, state: FSMContext):
+    await state.clear()
     args = message.text.split()
     referrer_id = None
     if len(args) > 1 and args[1].isdigit():
         referrer_id = int(args[1])
         
     text, keyboard = await get_main_menu(message, referrer_id)
+    if not keyboard:
+        await message.answer("⚠️ Your account has been banned from TradeHub.")
+        return
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 
@@ -199,81 +244,313 @@ async def open_orders(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.message(Command("bulkstock"))
-async def bulk_add_stock(message: types.Message):
+# --- INTERACTIVE ADMIN PANEL ---
+@dp.callback_query(F.data == "admin_panel")
+async def admin_panel_handler(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("⚠️ Unauthorized!", show_alert=True)
+        return
+    await state.clear()
+    
+    admin_text = (
+        f"⚡ <b>TradeHub Admin Control Panel</b>\n\n"
+        f"Manage your store effortlessly using the buttons below:"
+    )
+    kb = [
+        [types.InlineKeyboardButton(text="📦 View Stock & Add Items", callback_data="adm_stock")],
+        [types.InlineKeyboardButton(text="📢 Broadcast Message", callback_data="adm_broadcast")],
+        [types.InlineKeyboardButton(text="📊 Store Statistics", callback_data="adm_stats")],
+        [types.InlineKeyboardButton(text="🚫 Ban User", callback_data="adm_ban"),
+         types.InlineKeyboardButton(text="✅ Unban User", callback_data="adm_unban")],
+        [types.InlineKeyboardButton(text="🔙 Back to Main Menu", callback_data="back_to_menu")]
+    ]
+    await callback.message.edit_text(admin_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "adm_stats")
+async def admin_stats_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM orders")
+    total_orders = cursor.fetchone()[0]
+    cursor.execute("SELECT SUM(amount) FROM orders WHERE status = 'approved'")
+    total_revenue = cursor.fetchone()[0] or 0.0
+    conn.close()
+
+    stats_text = (
+        f"📊 <b>TradeHub Live Statistics</b>\n\n"
+        f"👥 Total Registered Users: <b>{total_users}</b>\n"
+        f"📦 Total Orders Placed: <b>{total_orders}</b>\n"
+        f"💰 Total Approved Revenue: <b>${total_revenue:.2f}</b>"
+    )
+    kb = [[types.InlineKeyboardButton(text="🔙 Back to Admin Panel", callback_data="admin_panel")]]
+    await callback.message.edit_text(stats_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "adm_stock")
+async def admin_stock_handler(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name FROM products")
+    prods = cursor.fetchall()
+    
+    stock_summary = "📦 <b>Product Stock Status:</b>\n\n"
+    kb = []
+    for p in prods:
+        p_id, p_name = p
+        count = get_stock_count(p_id)
+        stock_summary += f"• <b>{p_name}</b> (ID: {p_id}) — Stock: <b>{count}</b>\n"
+        kb.append([types.InlineKeyboardButton(text=f"➕ Add Stock for {p_name}", callback_data=f"add_stock_prompt_{p_id}")])
+    conn.close()
+    
+    stock_summary += "\n<i>Click a button below to add stock links:</i>"
+    kb.append([types.InlineKeyboardButton(text="🔙 Back to Admin Panel", callback_data="admin_panel")])
+    
+    await callback.message.edit_text(stock_summary, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("add_stock_prompt_"))
+async def prompt_add_stock(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    p_id = int(callback.data.split("_")[-1])
+    await state.update_data(product_id=p_id)
+    await state.set_state(AdminStates.waiting_stock_input)
+    
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM products WHERE id = ?", (p_id,))
+    p_name = cursor.fetchone()[0]
+    conn.close()
+
+    kb = [[types.InlineKeyboardButton(text="❌ Cancel", callback_data="admin_panel")]]
+    await callback.message.edit_text(
+        f"📦 <b>Add Stock for: {p_name}</b>\n\n"
+        f"Please send the links now (each link on a new line):",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@dp.message(AdminStates.waiting_stock_input)
+async def process_bulk_stock_input(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("⚠️ You are not authorized!")
         return
+    data = await state.get_data()
+    p_id = data.get("product_id")
     
-    lines = message.text.split("\n")
-    if len(lines) < 2:
-        await message.answer("⚠️ Format:\n/bulkstock\nlink1\nlink2")
-        return
-    
-    links_to_add = [line.strip() for line in lines[1:] if line.strip()]
+    links_to_add = [line.strip() for line in message.text.split("\n") if line.strip()]
     if not links_to_add:
-        await message.answer("⚠️ No valid links found!")
+        await message.answer("⚠️ No valid links found! Please send valid links.")
         return
 
     conn = sqlite3.connect("tradehub_shop.db")
     cursor = conn.cursor()
-    data_to_insert = [("Gemini Pro 18m Link", link) for link in links_to_add]
-    cursor.executemany("INSERT INTO stock (product_name, link) VALUES (?, ?)", data_to_insert)
+    data_to_insert = [(p_id, link) for link in links_to_add]
+    cursor.executemany("INSERT INTO stock (product_id, link) VALUES (?, ?)", data_to_insert)
     conn.commit()
     conn.close()
     
-    total_stock = get_stock_count("Gemini Pro 18m Link")
-    await message.answer(f"✅ Successfully added {len(links_to_add)} items!\n📦 Total TradeHub Stock: {total_stock}")
+    total_stock = get_stock_count(p_id)
+    await state.clear()
+    await message.answer(f"✅ Successfully added {len(links_to_add)} items!\n📦 Total Stock for this product: {total_stock}")
 
 
-@dp.callback_query(F.data == "shop")
-async def open_shop(callback: types.CallbackQuery):
-    stock = get_stock_count("Gemini Pro 18m Link")
-    shop_text = "🛒 <b>TradeHub Store - All Products</b>\n📦 <b>Page 1 of 1</b>\n⬇️ <b>Choose a product to buy:</b>"
-    kb = [
-        [types.InlineKeyboardButton(text=f"✨ Gemini Pro 18m Link - $0.38 (Stock: {stock})", callback_data="prod_gemini")],
-        [types.InlineKeyboardButton(text="🔙 Back to Menu", callback_data="back_to_menu")]
-    ]
-    await callback.message.edit_text(shop_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+@dp.callback_query(F.data == "adm_broadcast")
+async def prompt_broadcast(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminStates.waiting_for_broadcast)
+    kb = [[types.InlineKeyboardButton(text="❌ Cancel", callback_data="admin_panel")]]
+    await callback.message.edit_text("📢 <b>Broadcast Message</b>\n\nPlease send the message you want to broadcast to all users:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
 
+@dp.message(AdminStates.waiting_for_broadcast)
+async def execute_broadcast(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text_to_broadcast = message.text
+    await state.clear()
 
-@dp.callback_query(F.data == "prod_gemini")
-async def gemini_detail(callback: types.CallbackQuery):
-    stock = get_stock_count("Gemini Pro 18m Link")
-    product_desc = (
-        "✨ <b>Gemini Pro 18m Link</b>\n\n"
-        "📦 <b>Description:</b>\n• 18 Months Plan | 5TB Cloud Storage\n• 100% Private — No Sharing\n\n"
-        f"💵 <b>Standard Price:</b> $0.38\n📦 <b>Available Stock:</b> {stock}\n\n🔢 <b>Choose Buy Quantity:</b>"
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE is_banned = 0")
+    users = cursor.fetchall()
+    conn.close()
+
+    success, failed = 0, 0
+    for u in users:
+        try:
+            await bot.send_message(u[0], f"📢 <b>TradeHub Announcement</b>\n\n{text_to_broadcast}", parse_mode="HTML")
+            success += 1
+            await asyncio.sleep(0.05)
+        except:
+            failed += 1
+
+    await message.answer(f"📢 Broadcast Complete!\n✅ Success: {success}\n❌ Failed: {failed}")
+
+
+@dp.callback_query(F.data == "adm_ban")
+async def prompt_ban(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminStates.waiting_for_ban)
+    kb = [[types.InlineKeyboardButton(text="❌ Cancel", callback_data="admin_panel")]]
+    await callback.message.edit_text("🚫 <b>Ban User</b>\n\nPlease send the User ID you want to ban:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_ban)
+async def execute_ban(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not message.text.isdigit():
+        await message.answer("⚠️ Please send a valid numeric User ID.")
+        return
+    target_id = int(message.text)
+    await state.clear()
+
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (target_id,))
+    conn.commit()
+    conn.close()
+    await message.answer(f"🚫 User ID <code>{target_id}</code> has been banned successfully.", parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "adm_unban")
+async def prompt_unban(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminStates.waiting_for_unban)
+    kb = [[types.InlineKeyboardButton(text="❌ Cancel", callback_data="admin_panel")]]
+    await callback.message.edit_text("✅ <b>Unban User</b>\n\nPlease send the User ID you want to unban:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_for_unban)
+async def execute_unban(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    if not message.text.isdigit():
+        await message.answer("⚠️ Please send a valid numeric User ID.")
+        return
+    target_id = int(message.text)
+    await state.clear()
+
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (target_id,))
+    conn.commit()
+    conn.close()
+    await message.answer(f"✅ User ID <code>{target_id}</code> has been unbanned successfully.", parse_mode="HTML")
+
+
+# --- SHOP CATEGORIES & PRODUCTS ---
+@dp.callback_query(F.data == "shop_categories")
+async def shop_categories(callback: types.CallbackQuery):
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT category FROM products")
+    categories = cursor.fetchall()
+    conn.close()
+
+    kb = []
+    for cat in categories:
+        cat_name = cat[0]
+        kb.append([types.InlineKeyboardButton(text=f"📂 {cat_name}", callback_data=f"cat_{cat_name}")])
+    kb.append([types.InlineKeyboardButton(text="🔙 Back to Menu", callback_data="back_to_menu")])
+
+    await callback.message.edit_text("🛒 <b>TradeHub Store Categories</b>\n\nSelect a category below:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("cat_"))
+async def show_products_in_category(callback: types.CallbackQuery):
+    cat_name = callback.data.split("_", 1)[1]
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, price FROM products WHERE category = ?", (cat_name,))
+    products = cursor.fetchall()
+    conn.close()
+
+    kb = []
+    for prod in products:
+        p_id, p_name, p_price = prod
+        stock = get_stock_count(p_id)
+        kb.append([types.InlineKeyboardButton(text=f"✨ {p_name} - ${p_price:.2f} (Stock: {stock})", callback_data=f"prod_{p_id}")])
+    kb.append([types.InlineKeyboardButton(text="🔙 Back to Categories", callback_data="shop_categories")])
+
+    await callback.message.edit_text(f"📦 <b>Category: {cat_name}</b>\n\nChoose a product:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("prod_"))
+async def product_detail(callback: types.CallbackQuery):
+    p_id = int(callback.data.split("_")[1])
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, price, description FROM products WHERE id = ?", (p_id,))
+    prod = cursor.fetchone()
+    conn.close()
+
+    if not prod:
+        await callback.answer("Product not found!", show_alert=True)
+        return
+
+    p_name, p_price, p_desc = prod
+    stock = get_stock_count(p_id)
+
+    desc_text = (
+        f"✨ <b>{p_name}</b>\n\n"
+        f"📦 <b>Description:</b>\n{p_desc}\n\n"
+        f"💵 <b>Price:</b> ${p_price:.2f}\n📦 <b>Available Stock:</b> {stock}\n\n🔢 <b>Choose Buy Quantity:</b>"
     )
     kb = [
-        [types.InlineKeyboardButton(text="1", callback_data="buy_gemini_qty_1"),
-         types.InlineKeyboardButton(text="2", callback_data="buy_gemini_qty_2"),
-         types.InlineKeyboardButton(text="3", callback_data="buy_gemini_qty_3")],
-        [types.InlineKeyboardButton(text="4", callback_data="buy_gemini_qty_4"),
-         types.InlineKeyboardButton(text="5", callback_data="buy_gemini_qty_5")],
-        [types.InlineKeyboardButton(text="🔙 Back to Shop", callback_data="shop")]
+        [types.InlineKeyboardButton(text="1", callback_data=f"buy_{p_id}_1"),
+         types.InlineKeyboardButton(text="2", callback_data=f"buy_{p_id}_2"),
+         types.InlineKeyboardButton(text="3", callback_data=f"buy_{p_id}_3")],
+        [types.InlineKeyboardButton(text="4", callback_data=f"buy_{p_id}_4"),
+         types.InlineKeyboardButton(text="5", callback_data=f"buy_{p_id}_5")],
+        [types.InlineKeyboardButton(text="🔙 Back", callback_data="shop_categories")]
     ]
-    await callback.message.edit_text(product_desc, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.message.edit_text(desc_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("buy_gemini_qty_"))
+@dp.callback_query(F.data.startswith("buy_"))
 async def checkout_confirmation(callback: types.CallbackQuery):
-    qty = int(callback.data.split("_")[-1])
-    stock = get_stock_count("Gemini Pro 18m Link")
+    parts = callback.data.split("_")
+    p_id = int(parts[1])
+    qty = int(parts[2])
+
+    stock = get_stock_count(p_id)
     if qty > stock:
         await callback.answer(f"⚠️ Stock insufficient! Available stock: {stock}", show_alert=True)
         return
 
-    total_price = qty * 0.38
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, price FROM products WHERE id = ?", (p_id,))
+    prod = cursor.fetchone()
+    conn.close()
+
+    p_name, p_price = prod
+    total_price = qty * p_price
+
     checkout_text = (
-        f"🛒 <b>TradeHub - Checkout Confirmation</b>\n\n📦 <b>Product:</b> Gemini Pro 18m Link\n"
-        f"🔢 <b>Quantity:</b> {qty}\n💵 <b>Unit Rate:</b> $0.38\n💰 <b>Total Amount:</b> ${total_price:.2f}\n\n⬇️ <b>Select Payment Method:</b>"
+        f"🛒 <b>TradeHub - Checkout Confirmation</b>\n\n📦 <b>Product:</b> {p_name}\n"
+        f"🔢 <b>Quantity:</b> {qty}\n💵 <b>Unit Rate:</b> ${p_price:.2f}\n💰 <b>Total Amount:</b> ${total_price:.2f}\n\n⬇️ <b>Select Payment Method:</b>"
     )
     kb = [
-        [types.InlineKeyboardButton(text="💎 Pay with Crypto (Binance Pay Auto)", callback_data=f"pay_crypto_{qty}_{total_price:.2f}")],
-        [types.InlineKeyboardButton(text="❌ Cancel", callback_data="shop")]
+        [types.InlineKeyboardButton(text="💎 Pay with Crypto (Binance Pay Auto)", callback_data=f"pay_crypto_{p_id}_{qty}_{total_price:.2f}")],
+        [types.InlineKeyboardButton(text="❌ Cancel", callback_data="shop_categories")]
     ]
     await callback.message.edit_text(checkout_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
@@ -282,17 +559,18 @@ async def checkout_confirmation(callback: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("pay_crypto_"))
 async def crypto_payment(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    qty = parts[2]
-    amount = parts[3]
+    p_id = parts[2]
+    qty = parts[3]
+    amount = parts[4]
 
     binance_text = (
         f"💳 <b>TradeHub Payment Instructions</b>\n\n💰 <b>Amount to Pay:</b> ${amount}\n🌐 <b>Method:</b> Binance Pay Auto\n\n"
         f"📌 <b>Send EXACTLY ${amount} to Binance Pay UID:</b>\n<code>{BINANCE_PAY_UID}</code>\n\n"
-        f"⚠️ <b>Important:</b> After making the payment, click <b>'Submit TxID Now'</b> and send your transaction hash."
+        f"⚠️ <b>Important:</b> After making payment, click <b>'Submit TxID Now'</b> and send your transaction hash."
     )
     kb = [
-        [types.InlineKeyboardButton(text="✍️ Submit TxID Now", callback_data=f"enter_tx_{qty}_{amount}")],
-        [types.InlineKeyboardButton(text="🔙 Back", callback_data="prod_gemini")]
+        [types.InlineKeyboardButton(text="✍️ Submit TxID Now", callback_data=f"enter_tx_{p_id}_{qty}_{amount}")],
+        [types.InlineKeyboardButton(text="🔙 Back", callback_data=f"prod_{p_id}")]
     ]
     await callback.message.edit_text(binance_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
@@ -303,10 +581,11 @@ waiting_for_tx = {}
 @dp.callback_query(F.data.startswith("enter_tx_"))
 async def ask_txid(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    qty = parts[2]
-    amount = parts[3]
+    p_id = int(parts[2])
+    qty = int(parts[3])
+    amount = float(parts[4])
     
-    waiting_for_tx[callback.from_user.id] = {"qty": int(qty), "amount": float(amount)}
+    waiting_for_tx[callback.from_user.id] = {"p_id": p_id, "qty": qty, "amount": amount}
     await callback.message.answer("✍️ Please reply to this chat with your <b>TxID (Transaction Hash)</b> or payment proof:", parse_mode="HTML")
     await callback.answer()
 
@@ -318,6 +597,7 @@ async def receive_txid(message: types.Message):
         return
     
     order_data = waiting_for_tx.pop(user_id)
+    p_id = order_data["p_id"]
     qty = order_data["qty"]
     amount = order_data["amount"]
     txid = message.text
@@ -325,9 +605,12 @@ async def receive_txid(message: types.Message):
 
     conn = sqlite3.connect("tradehub_shop.db")
     cursor = conn.cursor()
+    cursor.execute("SELECT name FROM products WHERE id = ?", (p_id,))
+    p_name = cursor.fetchone()[0]
+
     cursor.execute(
         "INSERT INTO orders (user_id, username, product_name, quantity, amount, txid, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (user_id, username, "Gemini Pro 18m Link", qty, amount, txid, "pending")
+        (user_id, username, p_name, qty, amount, txid, "pending")
     )
     order_id = cursor.lastrowid
     conn.commit()
@@ -338,7 +621,7 @@ async def receive_txid(message: types.Message):
     admin_text = (
         f"🔔 <b>TradeHub - New Order Verification!</b>\n\n"
         f"👤 <b>User:</b> {username} (<code>{user_id}</code>)\n"
-        f"📦 <b>Product:</b> Gemini Pro 18m Link (Qty: {qty})\n"
+        f"📦 <b>Product:</b> {p_name} (Qty: {qty})\n"
         f"💰 <b>Amount:</b> ${amount}\n"
         f"🆔 <b>TxID:</b> <code>{txid}</code>\n\n"
         f"Approve this transaction?"
@@ -374,20 +657,27 @@ async def admin_decision(callback: types.CallbackQuery):
     user_id, product_name, qty, amount, _ = order
 
     if "app" in action:
-        stock = get_stock_count(product_name)
+        cursor.execute("SELECT id FROM products WHERE name = ?", (product_name,))
+        p_row = cursor.fetchone()
+        if not p_row:
+            await callback.answer("Product error!", show_alert=True)
+            conn.close()
+            return
+        p_id = p_row[0]
+
+        stock = get_stock_count(p_id)
         if stock < qty:
             await callback.answer(f"⚠️ Stock insufficient! Available: {stock}", show_alert=True)
             conn.close()
             return
 
-        cursor.execute("SELECT id, link FROM stock WHERE product_name = ? LIMIT ?", (product_name, qty))
+        cursor.execute("SELECT id, link FROM stock WHERE product_id = ? LIMIT ?", (p_id, qty))
         rows = cursor.fetchall()
         link_ids = [r[0] for r in rows]
         links = [r[1] for r in rows]
 
         cursor.executemany("DELETE FROM stock WHERE id = ?", [(i,) for i in link_ids])
         cursor.execute("UPDATE orders SET status = 'approved' WHERE id = ?", (order_id,))
-        
         cursor.execute("UPDATE users SET total_spent = total_spent + ? WHERE user_id = ?", (amount, user_id))
 
         cursor.execute("SELECT referred_by FROM users WHERE user_id = ?", (user_id,))
@@ -397,11 +687,19 @@ async def admin_decision(callback: types.CallbackQuery):
             commission = amount * 0.05
             cursor.execute("UPDATE users SET referral_earnings = referral_earnings + ? WHERE user_id = ?", (commission, referrer_id))
             try:
-                await bot.send_message(referrer_id, f"🎉 <b>Referral Bonus!</b> Your referred user made a purchase and you earned a <b>${commission:.2f}</b> referral commission!", parse_mode="HTML")
+                await bot.send_message(referrer_id, f"🎉 <b>Referral Bonus!</b> Your referred user made a purchase and you earned <b>${commission:.2f}</b>!", parse_mode="HTML")
             except:
                 pass
 
         conn.commit()
+
+        remaining_stock = get_stock_count(p_id)
+        if remaining_stock <= 3:
+            try:
+                await bot.send_message(ADMIN_ID, f"⚠️ <b>Low Stock Alert!</b>\nProduct: {product_name}\nRemaining Stock: {remaining_stock}", parse_mode="HTML")
+            except:
+                pass
+
         conn.close()
 
         delivered_links = "\n".join([f"🔗 {l}" for l in links])
@@ -426,14 +724,18 @@ async def admin_decision(callback: types.CallbackQuery):
 
 
 @dp.callback_query(F.data == "back_to_menu")
-async def back_to_menu(callback: types.CallbackQuery):
+async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     text, keyboard = await get_main_menu(callback.message)
+    if not keyboard:
+        await callback.answer("Your account is banned.", show_alert=True)
+        return
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
 
 async def main():
-    print("TradeHub Store is running...")
+    print("TradeHub Pro Store with Admin Panel is running...")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
