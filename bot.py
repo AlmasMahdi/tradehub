@@ -129,6 +129,16 @@ async def check_user_subscription(user_id: int) -> bool:
         print(f"Subscription check error: {e}")
         return True
 
+def get_membership_tier(total_spent: float) -> str:
+    if total_spent >= 50.0:
+        return "💎 Diamond"
+    elif total_spent >= 20.0:
+        return "🥇 Gold"
+    elif total_spent >= 5.0:
+        return "🥈 Silver"
+    else:
+        return "🥉 Bronze"
+
 
 async def get_main_menu(message: types.Message, referrer_id: int = None):
     user = message.from_user
@@ -141,6 +151,7 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
         return None, None
         
     total_spent = db_user[2]
+    membership = get_membership_tier(total_spent)
     
     conn = sqlite3.connect("tradehub_shop.db")
     cursor = conn.cursor()
@@ -155,7 +166,7 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
         f"________________________________________\n\n"
         f"🏷️ Username: {username}\n"
         f"🆔 UserID: {user_id}\n"
-        f"👑 Membership: 🥉 Bronze\n"
+        f"👑 Membership: {membership}\n"
         f"💎 Total Spent: ${total_spent:.2f}\n"
         f"🤝 Referrals: {referral_count}\n"
         f"📜 Referral Earning: ${referral_earnings:.2f}\n"
@@ -492,7 +503,6 @@ async def execute_unban(message: types.Message, state: FSMContext):
     await message.answer(f"✅ User ID <code>{target_id}</code> has been unbanned successfully.", parse_mode="HTML")
 
 
-# --- DIRECT SHOP & PRODUCTS (NO CATEGORIES) ---
 @dp.callback_query(F.data == "shop")
 async def open_shop(callback: types.CallbackQuery):
     conn = sqlite3.connect("tradehub_shop.db")
