@@ -37,7 +37,6 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category TEXT,
             name TEXT,
             price REAL,
             description TEXT
@@ -82,10 +81,8 @@ def seed_default_products():
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM products")
     if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO products (category, name, price, description) VALUES (?, ?, ?, ?)",
-                       ("AI Tools", "Gemini Pro 18m Link", 0.38, "18 Months Plan | 5TB Cloud Storage\n• 100% Private — No Sharing"))
-        cursor.execute("INSERT INTO products (category, name, price, description) VALUES (?, ?, ?, ?)",
-                       ("Streaming", "Netflix Premium 1M", 1.50, "1 Month UHD 4K Private Profile"))
+        cursor.execute("INSERT INTO products (name, price, description) VALUES (?, ?, ?)",
+                       ("Gemini Pro 18m Link", 0.38, "18 Months Plan | 5TB Cloud Storage\n• 100% Private — No Sharing"))
         conn.commit()
     conn.close()
 
@@ -168,7 +165,7 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
     )
 
     kb = [
-        [types.InlineKeyboardButton(text="🛒 Shop Categories", callback_data="shop_categories")],
+        [types.InlineKeyboardButton(text="🛒 Shop", callback_data="shop")],
         [
             types.InlineKeyboardButton(text="💰 Wallet (Disabled)", callback_data="wallet_disabled"),
             types.InlineKeyboardButton(text="🤝 Referral", callback_data="referral")
@@ -495,29 +492,12 @@ async def execute_unban(message: types.Message, state: FSMContext):
     await message.answer(f"✅ User ID <code>{target_id}</code> has been unbanned successfully.", parse_mode="HTML")
 
 
-@dp.callback_query(F.data == "shop_categories")
-async def shop_categories(callback: types.CallbackQuery):
+# --- DIRECT SHOP & PRODUCTS (NO CATEGORIES) ---
+@dp.callback_query(F.data == "shop")
+async def open_shop(callback: types.CallbackQuery):
     conn = sqlite3.connect("tradehub_shop.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT category FROM products")
-    categories = cursor.fetchall()
-    conn.close()
-
-    kb = []
-    for cat in categories:
-        cat_name = cat[0]
-        kb.append([types.InlineKeyboardButton(text=f"📂 {cat_name}", callback_data=f"cat_{cat_name}")])
-    kb.append([types.InlineKeyboardButton(text="🔙 Back to Menu", callback_data="back_to_menu")])
-
-    await callback.message.edit_text("🛒 <b>TradeHub Store Categories</b>\n\nSelect a category below:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("cat_"))
-async def show_products_in_category(callback: types.CallbackQuery):
-    cat_name = callback.data.split("_", 1)[1]
-    conn = sqlite3.connect("tradehub_shop.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, name, price FROM products WHERE category = ?", (cat_name,))
+    cursor.execute("SELECT id, name, price FROM products")
     products = cursor.fetchall()
     conn.close()
 
@@ -526,9 +506,10 @@ async def show_products_in_category(callback: types.CallbackQuery):
         p_id, p_name, p_price = prod
         stock = get_stock_count(p_id)
         kb.append([types.InlineKeyboardButton(text=f"✨ {p_name} - ${p_price:.2f} (Stock: {stock})", callback_data=f"prod_{p_id}")])
-    kb.append([types.InlineKeyboardButton(text="🔙 Back to Categories", callback_data="shop_categories")])
+    kb.append([types.InlineKeyboardButton(text="🔙 Back to Menu", callback_data="back_to_menu")])
 
-    await callback.message.edit_text(f"📦 <b>Category: {cat_name}</b>\n\nChoose a product:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    shop_text = "🛒 <b>TradeHub Store - All Products</b>\n📦 <b>Page 1 of 1</b>\n⬇️ <b>Choose a product to buy:</b>"
+    await callback.message.edit_text(shop_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("prod_"))
@@ -558,7 +539,7 @@ async def product_detail(callback: types.CallbackQuery):
          types.InlineKeyboardButton(text="3", callback_data=f"buy_{p_id}_3")],
         [types.InlineKeyboardButton(text="4", callback_data=f"buy_{p_id}_4"),
          types.InlineKeyboardButton(text="5", callback_data=f"buy_{p_id}_5")],
-        [types.InlineKeyboardButton(text="🔙 Back", callback_data="shop_categories")]
+        [types.InlineKeyboardButton(text="🔙 Back to Shop", callback_data="shop")]
     ]
     await callback.message.edit_text(desc_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
@@ -590,7 +571,7 @@ async def checkout_confirmation(callback: types.CallbackQuery):
     )
     kb = [
         [types.InlineKeyboardButton(text="💎 Pay with Crypto (Binance Pay Auto)", callback_data=f"pay_crypto_{p_id}_{qty}_{total_price:.2f}")],
-        [types.InlineKeyboardButton(text="❌ Cancel", callback_data="shop_categories")]
+        [types.InlineKeyboardButton(text="❌ Cancel", callback_data="shop")]
     ]
     await callback.message.edit_text(checkout_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
@@ -781,7 +762,7 @@ async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
 
 
 async def main():
-    print("TradeHub Pro Store with Force-Join is running...")
+    print("TradeHub Store is running...")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
