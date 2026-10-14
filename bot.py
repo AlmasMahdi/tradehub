@@ -16,8 +16,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 if not API_TOKEN:
     raise ValueError("⚠️ BOT_TOKEN is missing! Please set it in the .env file.")
 
-BINANCE_PAY_UID = "973903765"
-ADMIN_USERNAME = "lorem_3"
+BINANCE_PAY_UID = "516051485"
+ADMIN_USERNAME = "Killmanx4"
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
@@ -66,9 +66,10 @@ async def get_main_menu(message: types.Message):
     user_name = user.first_name
     username = f"@{user.username}" if user.username else "Not Set"
     user_id = user.id
+    bot_user = (await bot.get_me()).username
     
     welcome_text = (
-        f"👋 Welcome back, {user_name} to **TradeHub**!\n"
+        f"👋 Welcome back, <b>{user_name}</b> to <b>TradeHub</b>!\n"
         f"Quality digital products at cheapest rates\n\n"
         f"________________________________________\n\n"
         f"🏷️ Username: {username}\n"
@@ -78,7 +79,7 @@ async def get_main_menu(message: types.Message):
         f"💰 Balance: $0.00\n"
         f"🤝 Referrals: 0\n"
         f"📜 Referral Earning: $0.00\n"
-        f"🔗 Referral Link: https://t.me/{(await bot.get_me()).username}?start={user_id}\n\n"
+        f"🔗 Referral Link: https://t.me/{bot_user}?start={user_id}\n\n"
         f"________________________________________\n\n"
         f"Choose an option below to get started."
     )
@@ -98,7 +99,7 @@ async def get_main_menu(message: types.Message):
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
     text, keyboard = await get_main_menu(message)
-    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 @dp.message(Command("bulkstock"))
@@ -109,7 +110,7 @@ async def bulk_add_stock(message: types.Message):
     
     lines = message.text.split("\n")
     if len(lines) < 2:
-        await message.answer("⚠️ Format:\n`/bulkstock`\n`link1`\n`link2`", parse_mode="Markdown")
+        await message.answer("⚠️ Format:\n/bulkstock\nlink1\nlink2")
         return
     
     links_to_add = [line.strip() for line in lines[1:] if line.strip()]
@@ -131,12 +132,12 @@ async def bulk_add_stock(message: types.Message):
 @dp.callback_query(F.data == "shop")
 async def open_shop(callback: types.CallbackQuery):
     stock = get_stock_count("Gemini Pro 18m Link")
-    shop_text = "🛒 **TradeHub Store - All Products**\n📦 **Page 1 of 1**\n⬇️ **Choose a product to buy:**"
+    shop_text = "🛒 <b>TradeHub Store - All Products</b>\n📦 <b>Page 1 of 1</b>\n⬇️ <b>Choose a product to buy:</b>"
     kb = [
         [types.InlineKeyboardButton(text=f"✨ Gemini Pro 18m Link - $0.38 (Stock: {stock})", callback_data="prod_gemini")],
         [types.InlineKeyboardButton(text="🔙 Back to Menu", callback_data="back_to_menu")]
     ]
-    await callback.message.edit_text(shop_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(shop_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
 
 
@@ -144,9 +145,9 @@ async def open_shop(callback: types.CallbackQuery):
 async def gemini_detail(callback: types.CallbackQuery):
     stock = get_stock_count("Gemini Pro 18m Link")
     product_desc = (
-        "✨ **Gemini Pro 18m Link**\n\n"
-        "📦 **Description:**\n• 18 Months Plan | 5TB Cloud Storage\n• 100% Private — No Sharing\n\n"
-        f"💵 **Standard Price:** $0.38\n📦 **Available Stock:** {stock}\n\n🔢 **Choose Buy Quantity:**"
+        "✨ <b>Gemini Pro 18m Link</b>\n\n"
+        "📦 <b>Description:</b>\n• 18 Months Plan | 5TB Cloud Storage\n• 100% Private — No Sharing\n\n"
+        f"💵 <b>Standard Price:</b> $0.38\n📦 <b>Available Stock:</b> {stock}\n\n🔢 <b>Choose Buy Quantity:</b>"
     )
     kb = [
         [types.InlineKeyboardButton(text="1", callback_data="buy_gemini_qty_1"),
@@ -156,7 +157,7 @@ async def gemini_detail(callback: types.CallbackQuery):
          types.InlineKeyboardButton(text="5", callback_data="buy_gemini_qty_5")],
         [types.InlineKeyboardButton(text="🔙 Back to Shop", callback_data="shop")]
     ]
-    await callback.message.edit_text(product_desc, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(product_desc, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
 
 
@@ -170,14 +171,14 @@ async def checkout_confirmation(callback: types.CallbackQuery):
 
     total_price = qty * 0.38
     checkout_text = (
-        f"🛒 **TradeHub - Checkout Confirmation**\n\n📦 **Product:** Gemini Pro 18m Link\n"
-        f"🔢 **Quantity:** {qty}\n💵 **Unit Rate:** $0.38\n💰 **Total Amount:** ${total_price:.2f}\n\n⬇️ **Select Payment Method:**"
+        f"🛒 <b>TradeHub - Checkout Confirmation</b>\n\n📦 <b>Product:</b> Gemini Pro 18m Link\n"
+        f"🔢 <b>Quantity:</b> {qty}\n💵 <b>Unit Rate:</b> $0.38\n💰 <b>Total Amount:</b> ${total_price:.2f}\n\n⬇️ <b>Select Payment Method:</b>"
     )
     kb = [
         [types.InlineKeyboardButton(text="💎 Pay with Crypto (Binance Pay Auto)", callback_data=f"pay_crypto_{qty}_{total_price:.2f}")],
         [types.InlineKeyboardButton(text="❌ Cancel", callback_data="shop")]
     ]
-    await callback.message.edit_text(checkout_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(checkout_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
 
 
@@ -188,15 +189,15 @@ async def crypto_payment(callback: types.CallbackQuery):
     amount = parts[3]
 
     binance_text = (
-        f"💳 **TradeHub Payment Instructions**\n\n💰 **Amount to Pay:** ${amount}\n🌐 **Method:** Binance Pay Auto\n\n"
-        f"📌 **Send EXACTLY ${amount} to Binance Pay UID:**\n`{BINANCE_PAY_UID}`\n\n"
-        f"⚠️ **Important:** Payment karne ke baad **'Submit TxID Now'** button dabayein aur apna transaction hash bhein."
+        f"💳 <b>TradeHub Payment Instructions</b>\n\n💰 <b>Amount to Pay:</b> ${amount}\n🌐 <b>Method:</b> Binance Pay Auto\n\n"
+        f"📌 <b>Send EXACTLY ${amount} to Binance Pay UID:</b>\n<code>{BINANCE_PAY_UID}</code>\n\n"
+        f"⚠️ <b>Important:</b> Payment karne ke baad <b>'Submit TxID Now'</b> button dabayein aur apna transaction hash bhein."
     )
     kb = [
         [types.InlineKeyboardButton(text="✍️ Submit TxID Now", callback_data=f"enter_tx_{qty}_{amount}")],
         [types.InlineKeyboardButton(text="🔙 Back", callback_data="prod_gemini")]
     ]
-    await callback.message.edit_text(binance_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(binance_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
 
 
@@ -209,7 +210,7 @@ async def ask_txid(callback: types.CallbackQuery):
     amount = parts[3]
     
     waiting_for_tx[callback.from_user.id] = {"qty": int(qty), "amount": float(amount)}
-    await callback.message.answer("✍️ Meherbani kar ke apni payment ka **TxID (Transaction Hash)** ya payment screenshot/text yahan chat mein reply bhej dein:")
+    await callback.message.answer("✍️ Meherbani kar ke apni payment ka <b>TxID (Transaction Hash)</b> ya payment screenshot/text yahan chat mein reply bhej dein:", parse_mode="HTML")
     await callback.answer()
 
 
@@ -238,11 +239,11 @@ async def receive_txid(message: types.Message):
     await message.answer("✅ Aapka TxID receive ho gaya hai! TradeHub Admin verification ke baad product foran deliver kar diya jayega.")
 
     admin_text = (
-        f"🔔 **TradeHub - New Order Verification!**\n\n"
-        f"👤 **User:** {username} (`{user_id}`)\n"
-        f"📦 **Product:** Gemini Pro 18m Link (Qty: {qty})\n"
-        f"💰 **Amount:** ${amount}\n"
-        f"🆔 **TxID:** `{txid}`\n\n"
+        f"🔔 <b>TradeHub - New Order Verification!</b>\n\n"
+        f"👤 <b>User:</b> {username} (<code>{user_id}</code>)\n"
+        f"📦 <b>Product:</b> Gemini Pro 18m Link (Qty: {qty})\n"
+        f"💰 <b>Amount:</b> ${amount}\n"
+        f"🆔 <b>TxID:</b> <code>{txid}</code>\n\n"
         f"Approve this transaction?"
     )
     kb = [
@@ -251,7 +252,7 @@ async def receive_txid(message: types.Message):
             types.InlineKeyboardButton(text="❌ Reject", callback_data=f"adm_rej_{order_id}")
         ]
     ]
-    await bot.send_message(ADMIN_ID, admin_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await bot.send_message(ADMIN_ID, admin_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("adm_app_") | F.data.startswith("adm_rej_"))
@@ -296,10 +297,11 @@ async def admin_decision(callback: types.CallbackQuery):
 
         await bot.send_message(
             user_id,
-            f"🎉 **TradeHub - Payment Verified & Approved!**\n\n📦 **Product:** {product_name} (Qty: {qty})\n\n"
-            f"🔑 **Your Item(s):**\n{delivered_links}\n\nThank you for shopping with TradeHub!"
+            f"🎉 <b>TradeHub - Payment Verified & Approved!</b>\n\n📦 <b>Product:</b> {product_name} (Qty: {qty})\n\n"
+            f"🔑 <b>Your Item(s):</b>\n{delivered_links}\n\nThank you for shopping with TradeHub!",
+            parse_mode="HTML"
         )
-        await callback.message.edit_text(callback.message.text + "\n\n✅ **Status: APPROVED & DELIVERED**")
+        await callback.message.edit_text(callback.message.text + "\n\n✅ <b>Status: APPROVED & DELIVERED</b>", parse_mode="HTML")
         await callback.answer("Order approved and items dispatched!")
 
     else:
@@ -308,14 +310,14 @@ async def admin_decision(callback: types.CallbackQuery):
         conn.close()
 
         await bot.send_message(user_id, "❌ TradeHub: Aapki payment verify nahi ho saki aur order reject kar diya gaya hai.")
-        await callback.message.edit_text(callback.message.text + "\n\n❌ **Status: REJECTED**")
+        await callback.message.edit_text(callback.message.text + "\n\n❌ <b>Status: REJECTED</b>", parse_mode="HTML")
         await callback.answer("Order rejected.")
 
 
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery):
     text, keyboard = await get_main_menu(callback.message)
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
 
