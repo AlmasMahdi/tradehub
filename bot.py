@@ -27,9 +27,17 @@ dp = Dispatcher()
 
 class AdminStates(StatesGroup):
     waiting_for_broadcast = State()
+    waiting_for_broadcast_media = State()
     waiting_for_ban = State()
     waiting_for_unban = State()
     waiting_stock_input = State()
+    waiting_price_input = State()
+    waiting_new_prod_name = State()
+    waiting_new_prod_price = State()
+    waiting_new_prod_desc = State()
+    waiting_promo_code = State()
+    waiting_promo_discount = State()
+    waiting_user_promo = State()
 
 def init_db():
     conn = sqlite3.connect("tradehub_shop.db")
@@ -69,6 +77,13 @@ def init_db():
             amount REAL,
             txid TEXT,
             status TEXT
+        )
+    """)
+    # Promo codes table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS promos (
+            code TEXT PRIMARY KEY,
+            discount_pct REAL
         )
     """)
     conn.commit()
@@ -165,7 +180,10 @@ async def get_main_menu(message: types.Message, referrer_id: int = None):
         admin_kb = [
             [types.InlineKeyboardButton(text="⏳ Pending Orders", callback_data="adm_pending_orders")],
             [types.InlineKeyboardButton(text="📦 View Stock & Add Items", callback_data="adm_stock")],
-            [types.InlineKeyboardButton(text="📢 Broadcast Message", callback_data="adm_broadcast")],
+            [types.InlineKeyboardButton(text="➕ Add New Product", callback_data="adm_add_product")],
+            [types.InlineKeyboardButton(text="💵 Update Product Price", callback_data="adm_price_list")],
+            [types.InlineKeyboardButton(text="🎟️ Create Promo Code", callback_data="adm_create_promo")],
+            [types.InlineKeyboardButton(text="📢 Rich Media Broadcast", callback_data="adm_broadcast")],
             [types.InlineKeyboardButton(text="📊 Store Statistics", callback_data="adm_stats")],
             [types.InlineKeyboardButton(text="🚫 Ban User", callback_data="adm_ban"),
              types.InlineKeyboardButton(text="✅ Unban User", callback_data="adm_unban")],
@@ -336,7 +354,10 @@ async def admin_panel_handler(callback: types.CallbackQuery, state: FSMContext):
     kb = [
         [types.InlineKeyboardButton(text="⏳ Pending Orders", callback_data="adm_pending_orders")],
         [types.InlineKeyboardButton(text="📦 View Stock & Add Items", callback_data="adm_stock")],
-        [types.InlineKeyboardButton(text="📢 Broadcast Message", callback_data="adm_broadcast")],
+        [types.InlineKeyboardButton(text="➕ Add New Product", callback_data="adm_add_product")],
+        [types.InlineKeyboardButton(text="💵 Update Product Price", callback_data="adm_price_list")],
+        [types.InlineKeyboardButton(text="🎟️ Create Promo Code", callback_data="adm_create_promo")],
+        [types.InlineKeyboardButton(text="📢 Rich Media Broadcast", callback_data="adm_broadcast")],
         [types.InlineKeyboardButton(text="📊 Store Statistics", callback_data="adm_stats")],
         [types.InlineKeyboardButton(text="🚫 Ban User", callback_data="adm_ban"),
          types.InlineKeyboardButton(text="✅ Unban User", callback_data="adm_unban")],
@@ -382,6 +403,190 @@ async def admin_pending_orders(callback: types.CallbackQuery):
     ]
     await callback.message.edit_text(order_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
+
+
+# --- PROMO CODE CREATION ---
+@dp.callback_query(F.data == "adm_create_promo")
+async def prompt_promo_code(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminStates.waiting_promo_code)
+    kb = [[types.InlineKeyboardButton(text="❌ Cancel", callback_data="admin_panel")]]
+    await callback.message.edit_text(
+        "🎟️ <b>Create Promo Code</b>\n\n"
+        "Please send the <b>Promo Code name</b> (e.g., <i>SPECIAL20</i>):",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_promo_code)
+async def process_promo_code(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.update_data(promo_code=message.text.strip().upper())
+    await state.set_state(AdminStates.waiting_promo_discount)
+    await message.answer("📉 Please send the <b>Discount Percentage</b> (e.g., <code>10</code> for 10% off):", parse_mode="HTML")
+
+@dp.message(AdminStates.waiting_promo_discount)
+async def process_promo_discount(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        discount = float(message.text.strip())
+    except ValueError:
+        await message.answer("⚠️ Invalid percentage! Please send a valid number (e.g., 10).")
+        return
+
+    data = await state.get_data()
+    code = data.get("promo_code")
+
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR REPLACE INTO promos (code, discount_pct) VALUES (?, ?)", (code, discount))
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    kb = [[types.InlineKeyboardButton(text="⚡ Back to Admin Panel", callback_data="admin_panel")]]
+    await message.answer(f"✅ Promo Code <b>{code}</b> created successfully with <b>{discount}%</b> discount!", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+
+
+# --- ADD NEW PRODUCT FLOW ---
+@dp.callback_query(F.data == "adm_add_product")
+async def start_add_product(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminStates.waiting_new_prod_name)
+    kb = [[types.InlineKeyboardButton(text="❌ Cancel", callback_data="admin_panel")]]
+    await callback.message.edit_text(
+        "➕ <b>Add New Product</b>\n\n"
+        "Please send the <b>Product Name</b> (e.g., <i>Netflix Premium 1M</i>):",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_new_prod_name)
+async def process_new_prod_name(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await state.update_data(prod_name=message.text.strip())
+    await state.set_state(AdminStates.waiting_new_prod_price)
+    await message.answer("💵 Please send the <b>Product Price</b> in numbers (e.g., <code>1.50</code>):", parse_mode="HTML")
+
+@dp.message(AdminStates.waiting_new_prod_price)
+async def process_new_prod_price(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        price = float(message.text.strip())
+    except ValueError:
+        await message.answer("⚠️ Invalid price! Please send a valid number (e.g., 1.50).")
+        return
+    
+    await state.update_data(prod_price=price)
+    await state.set_state(AdminStates.waiting_new_prod_desc)
+    await message.answer("📝 Please send the <b>Product Description</b> (e.g., features, plan duration):", parse_mode="HTML")
+
+@dp.message(AdminStates.waiting_new_prod_desc)
+async def process_new_prod_desc(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    desc = message.text.strip()
+    data = await state.get_data()
+    name = data.get("prod_name")
+    price = data.get("prod_price")
+
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO products (name, price, description) VALUES (?, ?, ?)", (name, price, desc))
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    kb = [[types.InlineKeyboardButton(text="⚡ Back to Admin Panel", callback_data="admin_panel")]]
+    await message.answer(
+        f"✅ <b>Product Added Successfully!</b>\n\n"
+        f"✨ Name: {name}\n"
+        f"💵 Price: ${price:.2f}\n"
+        f"📝 Desc: {desc}",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="HTML"
+    )
+
+
+# --- ADMIN PRICE MANAGEMENT ---
+@dp.callback_query(F.data == "adm_price_list")
+async def admin_price_list(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, price FROM products")
+    prods = cursor.fetchall()
+    conn.close()
+
+    text = "💵 <b>Manage Product Prices</b>\n\nSelect a product to update its price:"
+    kb = []
+    for p in prods:
+        p_id, p_name, p_price = p
+        kb.append([types.InlineKeyboardButton(text=f"✏️ {p_name} (${p_price:.2f})", callback_data=f"edit_price_{p_id}")])
+    kb.append([types.InlineKeyboardButton(text="🔙 Back to Admin Panel", callback_data="admin_panel")])
+
+    await callback.message.edit_text(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("edit_price_"))
+async def prompt_edit_price(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    p_id = int(callback.data.split("_")[-1])
+    await state.update_data(product_id=p_id)
+    await state.set_state(AdminStates.waiting_price_input)
+
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, price FROM products WHERE id = ?", (p_id,))
+    prod = cursor.fetchone()
+    conn.close()
+
+    kb = [[types.InlineKeyboardButton(text="❌ Cancel", callback_data="adm_price_list")]]
+    await callback.message.edit_text(
+        f"💵 <b>Update Price for: {prod[0]}</b>\n"
+        f"Current Price: <b>${prod[1]:.2f}</b>\n\n"
+        f"Please send the new price in numbers (e.g., <code>0.45</code>):",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@dp.message(AdminStates.waiting_price_input)
+async def process_new_price(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        new_price = float(message.text.strip())
+    except ValueError:
+        await message.answer("⚠️ Invalid price format! Please send a valid number (e.g., 0.45).")
+        return
+
+    data = await state.get_data()
+    p_id = data.get("product_id")
+
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE products SET price = ? WHERE id = ?", (new_price, p_id))
+    cursor.execute("SELECT name FROM products WHERE id = ?", (p_id,))
+    p_name = cursor.fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    kb = [[types.InlineKeyboardButton(text="⚡ Back to Admin Panel", callback_data="admin_panel")]]
+    await message.answer(f"✅ Successfully updated price for <b>{p_name}</b> to <b>${new_price:.2f}</b>!", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "adm_stats")
@@ -479,25 +684,31 @@ async def process_bulk_stock_input(message: types.Message, state: FSMContext):
     
     total_stock = get_stock_count(p_id)
     await state.clear()
-    await message.answer(f"✅ Successfully added {len(links_to_add)} items!\n📦 Total Stock for this product: {total_stock}")
+    kb = [[types.InlineKeyboardButton(text="⚡ Back to Admin Panel", callback_data="admin_panel")]]
+    await message.answer(f"✅ Successfully added {len(links_to_add)} items!\n📦 Total Stock for this product: {total_stock}", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 
+# --- RICH MEDIA BROADCAST ---
 @dp.callback_query(F.data == "adm_broadcast")
 async def prompt_broadcast(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID:
         return
-    await state.set_state(AdminStates.waiting_for_broadcast)
+    await state.set_state(AdminStates.waiting_for_broadcast_media)
     kb = [[types.InlineKeyboardButton(text="❌ Cancel", callback_data="admin_panel")]]
-    await callback.message.edit_text("📢 <b>Broadcast Message</b>\n\nPlease send the message you want to broadcast to all users:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
+    await callback.message.edit_text(
+        "📢 <b>Rich Media Broadcast</b>\n\n"
+        "Please send the announcement message (you can attach a photo, or just text):",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="HTML"
+    )
     await callback.answer()
 
-@dp.message(AdminStates.waiting_for_broadcast)
+@dp.message(AdminStates.waiting_for_broadcast_media)
 async def execute_broadcast(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
-    text_to_broadcast = message.text
+    
     await state.clear()
-
     conn = sqlite3.connect("tradehub_shop.db")
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM users WHERE is_banned = 0")
@@ -507,13 +718,20 @@ async def execute_broadcast(message: types.Message, state: FSMContext):
     success, failed = 0, 0
     for u in users:
         try:
-            await bot.send_message(u[0], f"📢 <b>TradeHub Announcement</b>\n\n{text_to_broadcast}", parse_mode="HTML")
+            if message.photo:
+                photo_id = message.photo[-1].file_id
+                caption = f"📢 <b>TradeHub Announcement</b>\n\n{message.caption or ''}"
+                await bot.send_photo(u[0], photo=photo_id, caption=caption, parse_mode="HTML")
+            else:
+                text = f"📢 <b>TradeHub Announcement</b>\n\n{message.text}"
+                await bot.send_message(u[0], text, parse_mode="HTML")
             success += 1
             await asyncio.sleep(0.05)
         except:
             failed += 1
 
-    await message.answer(f"📢 Broadcast Complete!\n✅ Success: {success}\n❌ Failed: {failed}")
+    kb = [[types.InlineKeyboardButton(text="⚡ Back to Admin Panel", callback_data="admin_panel")]]
+    await message.answer(f"📢 Broadcast Complete!\n✅ Success: {success}\n❌ Failed: {failed}", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "adm_ban")
@@ -540,7 +758,8 @@ async def execute_ban(message: types.Message, state: FSMContext):
     cursor.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (target_id,))
     conn.commit()
     conn.close()
-    await message.answer(f"🚫 User ID <code>{target_id}</code> has been banned successfully.", parse_mode="HTML")
+    kb = [[types.InlineKeyboardButton(text="⚡ Back to Admin Panel", callback_data="admin_panel")]]
+    await message.answer(f"🚫 User ID <code>{target_id}</code> has been banned successfully.", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "adm_unban")
@@ -567,7 +786,8 @@ async def execute_unban(message: types.Message, state: FSMContext):
     cursor.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (target_id,))
     conn.commit()
     conn.close()
-    await message.answer(f"✅ User ID <code>{target_id}</code> has been unbanned successfully.", parse_mode="HTML")
+    kb = [[types.InlineKeyboardButton(text="⚡ Back to Admin Panel", callback_data="admin_panel")]]
+    await message.answer(f"✅ User ID <code>{target_id}</code> has been unbanned successfully.", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "shop")
@@ -584,7 +804,6 @@ async def open_shop(callback: types.CallbackQuery):
         stock = get_stock_count(p_id)
         kb.append([types.InlineKeyboardButton(text=f"✨ {p_name} - ${p_price:.2f} (Stock: {stock})", callback_data=f"prod_{p_id}")])
     
-    # Back button goes to admin panel if admin, else standard menu
     back_target = "admin_panel" if callback.from_user.id == ADMIN_ID else "back_to_menu"
     kb.append([types.InlineKeyboardButton(text="🔙 Back", callback_data=back_target)])
 
@@ -619,10 +838,49 @@ async def product_detail(callback: types.CallbackQuery):
          types.InlineKeyboardButton(text="3", callback_data=f"buy_{p_id}_3")],
         [types.InlineKeyboardButton(text="4", callback_data=f"buy_{p_id}_4"),
          types.InlineKeyboardButton(text="5", callback_data=f"buy_{p_id}_5")],
+        [types.InlineKeyboardButton(text="🎟️ Apply Promo Code", callback_data=f"promo_prompt_{p_id}")],
         [types.InlineKeyboardButton(text="🔙 Back to Shop", callback_data="shop")]
     ]
     await callback.message.edit_text(desc_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="HTML")
     await callback.answer()
+
+
+# --- PROMO CODE APPLICATION FLOW ---
+active_promos = {} # user_id -> discount_pct
+
+@dp.callback_query(F.data.startswith("promo_prompt_"))
+async def prompt_user_promo(callback: types.CallbackQuery, state: FSMContext):
+    p_id = int(callback.data.split("_")[-1])
+    await state.update_data(promo_product_id=p_id)
+    await state.set_state(AdminStates.waiting_user_promo)
+    kb = [[types.InlineKeyboardButton(text="❌ Cancel", callback_data=f"prod_{p_id}")]]
+    await callback.message.edit_text(
+        "🎟️ <b>Apply Promo Code</b>\n\nPlease send your discount promo code:",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_user_promo)
+async def verify_user_promo(message: types.Message, state: FSMContext):
+    code = message.text.strip().upper()
+    data = await state.get_data()
+    p_id = data.get("promo_product_id")
+
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT discount_pct FROM promos WHERE code = ?", (code,))
+    promo = cursor.fetchone()
+    conn.close()
+
+    if not promo:
+        await message.answer("⚠️ Invalid or expired promo code! Try again or select quantity directly from product menu.")
+        return
+
+    discount_pct = promo[0]
+    active_promos[message.from_user.id] = discount_pct
+    await state.clear()
+    await message.answer(f"✅ Promo Code applied successfully! <b>{discount_pct}% OFF</b> will be deducted at checkout.", parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("buy_"))
@@ -645,9 +903,18 @@ async def checkout_confirmation(callback: types.CallbackQuery):
     p_name, p_price = prod
     total_price = qty * p_price
 
+    # Apply promo discount if active
+    user_id = callback.from_user.id
+    discount_note = ""
+    if user_id in active_promos:
+        pct = active_promos.pop(user_id)
+        discount_amount = total_price * (pct / 100.0)
+        total_price -= discount_amount
+        discount_note = f"\n🎟️ <b>Promo Discount:</b> {pct}% OFF (-${discount_amount:.2f})"
+
     checkout_text = (
         f"🛒 <b>TradeHub - Checkout Confirmation</b>\n\n📦 <b>Product:</b> {p_name}\n"
-        f"🔢 <b>Quantity:</b> {qty}\n💵 <b>Unit Rate:</b> ${p_price:.2f}\n💰 <b>Total Amount:</b> ${total_price:.2f}\n\n⬇️ <b>Select Payment Method:</b>"
+        f"🔢 <b>Quantity:</b> {qty}\n💵 <b>Unit Rate:</b> ${p_price:.2f}{discount_note}\n💰 <b>Final Amount:</b> ${total_price:.2f}\n\n⬇️ <b>Select Payment Method:</b>"
     )
     kb = [
         [types.InlineKeyboardButton(text="💎 Pay with Crypto (Binance Pay Auto)", callback_data=f"pay_crypto_{p_id}_{qty}_{total_price:.2f}")],
@@ -697,15 +964,26 @@ async def receive_txid(message: types.Message):
     if user_id not in waiting_for_tx:
         return
     
+    txid = message.text.strip()
+    
+    # --- ANTI-FRAUD TXID DUPLICATE CHECK ---
+    conn = sqlite3.connect("tradehub_shop.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM orders WHERE txid = ?", (txid,))
+    existing_tx = cursor.fetchone()
+    
+    if existing_tx:
+        conn.close()
+        waiting_for_tx.pop(user_id, None)
+        await message.answer("⚠️ <b>Fraud Detected!</b> This Transaction Hash (TxID) has already been used in a previous order. Please submit a valid un-used TxID.")
+        return
+
     order_data = waiting_for_tx.pop(user_id)
     p_id = order_data["p_id"]
     qty = order_data["qty"]
     amount = order_data["amount"]
-    txid = message.text
     username = f"@{message.from_user.username}" if message.from_user.username else str(user_id)
 
-    conn = sqlite3.connect("tradehub_shop.db")
-    cursor = conn.cursor()
     cursor.execute("SELECT name FROM products WHERE id = ?", (p_id,))
     p_name = cursor.fetchone()[0]
 
@@ -842,7 +1120,7 @@ async def back_to_menu(callback: types.CallbackQuery, state: FSMContext):
 
 
 async def main():
-    print("TradeHub Store is running...")
+    print("TradeHub Pro Store with Promo & Anti-Fraud is running...")
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
